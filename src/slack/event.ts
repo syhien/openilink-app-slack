@@ -1,9 +1,11 @@
+import type { DotBridgeConfig } from "../config.js";
 import { App } from "@slack/bolt";
 
 /** Slack 消息数据结构 */
 export interface SlackMessageData {
   /** 频道 ID */
   channel: string;
+  subtype?: string;
   /** 消息时间戳（消息 ID） */
   messageTs: string;
   /** 线程时间戳（回复时存在） */
@@ -41,6 +43,8 @@ export function createSlackApp(
   botToken: string,
   appToken: string,
   onMessage: SlackMessageHandler,
+  dotBridge?: DotBridgeConfig,
+  selfUserId?: string,
 ): App {
   const app = new App({
     token: botToken,
@@ -53,16 +57,7 @@ export function createSlackApp(
     // 类型断言：message 事件的具体结构
     const msg = message as Record<string, any>;
 
-    // 忽略 bot 自己发送的消息，避免消息循环
-    if (msg.bot_id) {
-      return;
-    }
-
-    // 忽略消息子类型（如 message_changed、message_deleted 等）
-    // 只处理普通新消息（subtype 为 undefined）
-    if (msg.subtype) {
-      return;
-    }
+    if (!acceptSlackMessage(msg, dotBridge, selfUserId)) return;
 
     // 提取附件文件信息
     let files: SlackMessageData["files"];
@@ -77,6 +72,7 @@ export function createSlackApp(
     // 构造标准消息数据
     const data: SlackMessageData = {
       channel: msg.channel as string,
+      subtype: msg.subtype as string | undefined,
       messageTs: msg.ts as string,
       threadTs: msg.thread_ts as string | undefined,
       text: (msg.text as string) || "",
@@ -91,9 +87,24 @@ export function createSlackApp(
     try {
       await onMessage(data);
     } catch (err) {
-      console.error("[SlackEvent] 消息处理回调异常:", err);
+      console.error("[SlackEvent] 消息处理回调异常 (details redacted)");
     }
   });
 
   return app;
+}
+
+/** Only ordinary messages from the pinned dot identity may enter dot mode. */
+export function acceptSlackMessage(
+  msg: Record<string, any>, dot?: DotBridgeConfig, selfUserId?: string,
+): boolean {
+  if (dot) {
+    if (!selfUserId || dot.botUserId === selfUserId || msg.user === selfUserId) return false;
+    return msg.user === dot.botUserId && msg.bot_id === dot.botId &&
+      (!msg.subtype || msg.subtype === "bot_message") &&
+      typeof msg.thread_ts === "string" && msg.thread_ts !== msg.ts &&
+      typeof msg.ts === "string" && typeof msg.channel === "string" &&
+      typeof msg.text === "string";
+  }
+  return !msg.bot_id && !msg.subtype;
 }

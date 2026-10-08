@@ -1,3 +1,4 @@
+import type { DotBridgeConfig } from "../config.js";
 import { SlackClient } from "../slack/client.js";
 import { Store } from "../store.js";
 import type { HubEvent, Installation } from "../hub/types.js";
@@ -11,7 +12,7 @@ export class WxToSlack {
   private store: Store;
   private defaultChannel: string;
 
-  constructor(slackClient: SlackClient, store: Store, defaultChannel: string) {
+  constructor(slackClient: SlackClient, store: Store, defaultChannel: string, private dot?: DotBridgeConfig) {
     this.slackClient = slackClient;
     this.store = store;
     this.defaultChannel = defaultChannel;
@@ -31,10 +32,20 @@ export class WxToSlack {
 
     const eventType = evt.type;
     const data = evt.data;
-    const fromName = data.from_name || data.fromName || "未知用户";
+    const rawName = data.from_name || data.fromName || "未知用户";
+    const escape = (value: unknown) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const fromName = this.dot ? escape(rawName) : rawName;
     const fromId = data.from_id || data.fromId || "";
 
-    console.log(`[WxToSlack] 处理微信事件: type=${eventType}, from=${fromName}`);
+    if (this.dot) {
+      // Fail closed for unrecognized senders, other installations and group messages.
+      if (!this.defaultChannel || installation.id !== this.dot.installationId ||
+          event.installation_id !== installation.id || fromId !== this.dot.wxOwnerId ||
+          data.group || data.group_id || data.groupId || !evt.id ||
+          !eventType.startsWith("message")) return;
+      if (!this.store.claimBridgeDelivery(JSON.stringify(["wx", installation.id, evt.id]))) return;
+    }
+    console.log(`[WxToSlack] 处理微信事件: type=${eventType}`);
 
     let slackMessageTs: string | undefined;
 
@@ -71,7 +82,8 @@ export class WxToSlack {
 
         case "message.file": {
           // 文件消息
-          const fileName = data.file_name || data.fileName || "未知文件";
+          const rawFileName = data.file_name || data.fileName || "未知文件";
+          const fileName = this.dot ? escape(rawFileName) : rawFileName;
           const fallback = `[微信] ${fromName}: [文件: ${fileName}]`;
           slackMessageTs = await this.slackClient.sendText(this.defaultChannel, fallback);
           break;
@@ -85,7 +97,7 @@ export class WxToSlack {
 
         default: {
           // 未知消息类型
-          const fallback = `[微信] ${fromName}: [${eventType}消息]`;
+          const fallback = `[微信] ${fromName}: [${this.dot ? escape(eventType) : eventType}消息]`;
           slackMessageTs = await this.slackClient.sendText(this.defaultChannel, fallback);
           break;
         }
@@ -103,7 +115,7 @@ export class WxToSlack {
         console.log(`[WxToSlack] 保存消息关联: slackTs=${slackMessageTs}, wxUser=${fromId}`);
       }
     } catch (err) {
-      console.error(`[WxToSlack] 转发微信消息失败: type=${eventType}`, err);
+      console.error(`[WxToSlack] 转发微信消息失败: type=${eventType} (details redacted)`);
     }
   }
 
@@ -116,6 +128,15 @@ export class WxToSlack {
    * @returns Slack 消息时间戳
    */
   private async sendTextBlock(fromName: string, text: string): Promise<string> {
+    if (this.dot) {
+      if (typeof text !== "string" || !text.trim()) return "";
+      const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      // The bridge is visibly the sender; never impersonate the owner or dot.
+      const forwarded = `<@${this.dot.botUserId}> [微信转发] ${escape(text)}`;
+      return this.slackClient.sendBlocks(this.defaultChannel, [{
+        type: "section", text: { type: "mrkdwn", text: forwarded },
+      }], forwarded);
+    }
     const blocks = [
       {
         type: "section",

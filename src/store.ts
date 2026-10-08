@@ -1,6 +1,10 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import type { Installation, MessageLink } from "./hub/types.js";
 import { encryptConfig, decryptConfig } from "./utils/config-crypto.js";
+
+const BRIDGE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const BRIDGE_DELIVERY_MAX_ENTRIES = 10_000;
 
 /**
  * SQLite 存储层
@@ -8,12 +12,25 @@ import { encryptConfig, decryptConfig } from "./utils/config-crypto.js";
  */
 export class Store {
   private db: Database.Database;
+  private claimDeliveryTransaction: Database.Transaction<(keyHash: string, now: number) => boolean>;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
     // 启用 WAL 模式提升并发性能
     this.db.pragma("journal_mode = WAL");
     this.initTables();
+
+    const deleteExpired = this.db.prepare("DELETE FROM bridge_deliveries WHERE claimed_at <= ?");
+    const insertClaim = this.db.prepare(`
+      INSERT INTO bridge_deliveries (key_hash, claimed_at)
+      SELECT ?, ?
+      WHERE (SELECT COUNT(*) FROM bridge_deliveries) < ?
+      ON CONFLICT(key_hash) DO NOTHING
+    `);
+    this.claimDeliveryTransaction = this.db.transaction((keyHash: string, now: number) => {
+      deleteExpired.run(now - BRIDGE_DELIVERY_TTL_MS);
+      return insertClaim.run(keyHash, now, BRIDGE_DELIVERY_MAX_ENTRIES).changes === 1;
+    });
   }
 
   /** 初始化数据库表 */
@@ -44,6 +61,13 @@ export class Store {
         ON message_links(slack_channel_id, slack_message_ts);
       CREATE INDEX IF NOT EXISTS idx_message_links_wx_user
         ON message_links(installation_id, wx_user_id);
+
+      CREATE TABLE IF NOT EXISTS bridge_deliveries (
+        key_hash TEXT PRIMARY KEY,
+        claimed_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_bridge_deliveries_claimed_at
+        ON bridge_deliveries(claimed_at);
     `);
 
     // 兼容旧库：为 installations 表添加 encrypted_config 列
@@ -52,6 +76,26 @@ export class Store {
     } catch {
       // 列已存在则忽略
     }
+  }
+
+  /**
+   * Claim a delivery before any network side effect. A true result permits one
+   * attempt, not a guaranteed delivery: never release the claim after failure,
+   * since a timeout or crash may hide an already completed remote send.
+   *
+   * Claims survive restarts for seven days. At capacity, fail closed rather
+   * than evicting a live claim and allowing its delivery to be repeated.
+   * SQLite failures propagate, so callers must not send unless this returns true.
+   */
+  claimBridgeDelivery(key: string, now = Date.now()): boolean {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      throw new RangeError("Bridge delivery claim time must be a non-negative integer");
+    }
+    const keyHash = createHash("sha256").update(key).digest("hex");
+
+    // BEGIN IMMEDIATE serializes cleanup, capacity checks and insertion across
+    // independent Store instances and processes, not just this JS event loop.
+    return this.claimDeliveryTransaction.immediate(keyHash, now);
   }
 
   // ========== Installation CRUD ==========

@@ -1,3 +1,10 @@
+export interface DotBridgeConfig {
+  botUserId: string;
+  botId: string;
+  wxOwnerId: string;
+  installationId: string;
+}
+
 /**
  * App 配置接口
  * 注意：slackBotToken / slackAppToken / slackChannelId 在云端托管模式下为可选，
@@ -6,6 +13,8 @@
 export interface Config {
   /** HTTP 服务端口，默认 "8082" */
   port: string;
+  /** Opt-in, single-owner dot bridge. Absent preserves the original bridge. */
+  dotBridge?: DotBridgeConfig;
   /** Hub 服务地址，必填 */
   hubUrl: string;
   /** 当前 App 的公网访问地址，必填 */
@@ -41,5 +50,22 @@ export function loadConfig(): Config {
     throw new Error(`缺少必填环境变量: ${missing.join(", ")}`);
   }
 
+  const mode = process.env.DOT_BRIDGE_ENABLED ?? "false";
+  if (!["true", "false"].includes(mode)) throw new Error("DOT_BRIDGE_ENABLED must be true or false");
+  if (mode === "true") {
+    const required = ["DOT_SLACK_USER_ID", "DOT_SLACK_BOT_ID", "DOT_WECHAT_OWNER_ID",
+      "DOT_INSTALLATION_ID", "SLACK_CHANNEL_ID", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"];
+    const absent = required.filter(key => !process.env[key]?.trim());
+    if (absent.length) throw new Error(`Missing dot bridge settings: ${absent.join(", ")}`);
+    if (!/^[UW][A-Z0-9]+$/.test(process.env.DOT_SLACK_USER_ID!) ||
+        !/^B[A-Z0-9]+$/.test(process.env.DOT_SLACK_BOT_ID!) ||
+        !/^[CG][A-Z0-9]+$/.test(cfg.slackChannelId)) {
+      throw new Error("Invalid dot Slack identity or dedicated channel ID");
+    }
+    cfg.dotBridge = {
+      botUserId: process.env.DOT_SLACK_USER_ID!, botId: process.env.DOT_SLACK_BOT_ID!,
+      wxOwnerId: process.env.DOT_WECHAT_OWNER_ID!, installationId: process.env.DOT_INSTALLATION_ID!,
+    };
+  }
   return cfg;
 }

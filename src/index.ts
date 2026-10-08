@@ -69,13 +69,24 @@ async function main(): Promise<void> {
   const router = new Router(handlers);
 
   // 初始化消息桥接（如果有默认 Slack 客户端才启用）
-  const wxToSlack = slackClient ? new WxToSlack(slackClient, store, config.slackChannelId) : null;
-  const slackToWx = slackClient ? new SlackToWx(store, config.slackChannelId) : null;
+  const wxToSlack = slackClient ? new WxToSlack(slackClient, store, config.slackChannelId, config.dotBridge) : null;
+  const slackToWx = slackClient ? new SlackToWx(store, config.slackChannelId, config.dotBridge) : null;
 
   // 创建 Slack Bolt App（Socket Mode，仅在配置了 Slack 凭证时启动）
   let slackApp: Awaited<ReturnType<typeof createSlackApp>> | null = null;
   if (hasSlackCredentials && slackToWx) {
     const _slackToWx = slackToWx;
+    let selfUserId: string | undefined;
+    if (config.dotBridge) {
+      const identity = await slackClient!.web.auth.test().catch(() => {
+        throw new Error("Bridge identity verification failed (details redacted)");
+      });
+      selfUserId = identity.user_id;
+      if (!selfUserId || selfUserId === config.dotBridge.botUserId || identity.bot_id === config.dotBridge.botId) {
+        throw new Error("Cannot establish a distinct bridge bot identity");
+      }
+      _slackToWx.setSelfUserId(selfUserId);
+    }
     slackApp = createSlackApp(
       config.slackBotToken,
       config.slackAppToken,
@@ -84,6 +95,8 @@ async function main(): Promise<void> {
         const installations = store.getAllInstallations();
         await _slackToWx.handleSlackMessage(data, installations);
       },
+      config.dotBridge,
+      selfUserId,
     );
   } else {
     console.log("[Server] 未配置 Slack 凭证，跳过 Socket Mode 连接");

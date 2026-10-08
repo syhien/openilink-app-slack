@@ -49,7 +49,7 @@ export class SlackClient {
       console.log(`[SlackClient] 发送文本消息成功: channel=${ch}, ts=${result.ts}`);
       return result.ts;
     } catch (err) {
-      console.error("[SlackClient] 发送文本消息失败:", err);
+      console.error("[SlackClient] 发送文本消息失败 (details redacted)");
       throw err;
     }
   }
@@ -84,7 +84,7 @@ export class SlackClient {
       console.log(`[SlackClient] 发送 Block Kit 消息成功: channel=${ch}, ts=${result.ts}`);
       return result.ts;
     } catch (err) {
-      console.error("[SlackClient] 发送 Block Kit 消息失败:", err);
+      console.error("[SlackClient] 发送 Block Kit 消息失败 (details redacted)");
       throw err;
     }
   }

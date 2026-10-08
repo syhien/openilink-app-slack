@@ -368,3 +368,7 @@ src/
 ## License
 
 [MIT](./LICENSE)
+
+## Experimental dot bridge
+
+An optional single-owner, pinned-bot bridge is described in [docs/dot-bridge.md](docs/dot-bridge.md). It is disabled by default and has not been validated against a live dot integration.
